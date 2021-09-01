@@ -1,0 +1,281 @@
+//_21_read_mpu6050_136_3
+#include <Wire.h>
+const int mpu6050_addr = 0x68;   //MPU6050 I2C 통신 주소 = 0x68  
+void setup_mpu_6050_registers(){ 
+  //Configure the accelerometer (+/-2g)
+  Wire.beginTransmission(mpu6050_addr);
+  Wire.write(0x1C);
+  Wire.write(0x00); 
+  Wire.endTransmission();
+  //Configure the gyro (250dps full scale)
+  Wire.beginTransmission(mpu6050_addr);
+  Wire.write(0x1B); 
+  Wire.write(0x00); 
+  Wire.endTransmission();
+  //Configure the DLPF_CFG(Digital Low Pass Filter (DLPF))
+  //Acc : 44Hz Gyro: 42Hz
+  Wire.beginTransmission(mpu6050_addr);
+  Wire.write(0x1A); 
+  Wire.write(0x03); 
+  Wire.endTransmission();
+  //AllSensor reset
+  Wire.beginTransmission(mpu6050_addr);
+  Wire.write(0x68); 
+  Wire.write(0x07); 
+  Wire.endTransmission();
+  delay(1000);
+}
+void setup() {
+  Serial.begin(115200);
+  Serial1.begin(115200);
+  //Activate the MPU-6050
+  Wire.begin();       //I2C 통신 시작
+  Wire.beginTransmission(mpu6050_addr); //I2C 슬레이브 모듈과 통신을 시작할 때 호출
+  Wire.write(0x6B);   //0x6b : PWR_MGMT_1 레지스터
+  Wire.write(0x00);   //Wire.write:전송하고자하는 1바이트 데이터를 내부메모리 큐에 저장하는 역할
+  //0x6b 번지에 0을 보내면 내부 0x6b 번지를 0으로하고 MPU6050을 깨움(sleep을 깨움)
+  Wire.endTransmission(true);
+  setup_mpu_6050_registers();//센서 초기 setting
+}
+int throttle=0;
+
+void loop() {
+  Wire.beginTransmission(mpu6050_addr);
+  Wire.write(0x3b);
+  Wire.endTransmission(false);
+  Wire.requestFrom(mpu6050_addr, 14, true);
+  //MPU6050 내부 0x3b ~ 48 까지 가속도, 온도,자이로 센서값 14바이트 데이터 요청
+  while(Wire.available() < 14); //Wait until all the bytes are received
+  //센서 값 을 1바이트씩 받게 됨 
+  int16_t AcXH = Wire.read();
+  int16_t AcXL = Wire.read();
+  int16_t AcYH = Wire.read();
+  int16_t AcYL = Wire.read();
+  int16_t AcZH = Wire.read();
+  int16_t AcZL = Wire.read();
+  int16_t TmpH = Wire.read();
+  int16_t TmpL = Wire.read();
+  int16_t GyXH = Wire.read();
+  int16_t GyXL = Wire.read();
+  int16_t GyYH = Wire.read();
+  int16_t GyYL = Wire.read();
+  int16_t GyZH = Wire.read();
+  int16_t GyZL = Wire.read();
+
+  int16_t AcX = AcXH <<8 | AcXL;
+  int16_t AcY = AcYH <<8 | AcYL;
+  int16_t AcZ = AcZH <<8 | AcZL;
+  int16_t GyX = GyXH <<8 | GyXL;
+  int16_t GyY = GyYH <<8 | GyYL;
+  int16_t GyZ = GyZH <<8 | GyZL;
+
+  static int32_t AcXSum=0, AcYSum =0, AcZSum=0;
+  static int32_t GyXSum=0, GyYSum =0, GyZSum=0;
+  static double AcXoff=0.0, AcYoff =0.0, AcZoff=0.0;
+  static double GyXoff=0.0, GyYoff =0.0, GyZoff=0.0;
+  static int cnt_sample=1000;
+
+  if(cnt_sample>0) {
+    AcXSum +=AcX; AcYSum +=AcY; AcZSum +=AcZ;
+    GyXSum+= GyX; GyYSum+= GyY; GyZSum+= GyZ;
+    cnt_sample--;
+    if(cnt_sample==0) {
+      AcXoff =AcXSum/1000.0;
+      AcYoff =AcYSum/1000.0;
+      AcZoff =AcZSum/1000.0;
+      
+      GyXoff =GyXSum/1000.0;
+      GyYoff =GyYSum/1000.0;
+      GyZoff =GyZSum/1000.0;
+    }
+    delay(1);
+    return;
+  }
+
+  double AcXD =AcX-AcXoff; 
+  double AcYD =AcY-AcYoff;
+  double AcZD =AcZ-AcZoff+16384;
+
+  double GyXD =GyX-GyXoff;
+  double GyYD =GyY-GyYoff;
+  double GyZD =GyZ-GyZoff;
+  
+  //주기시간구하기
+  static unsigned long t_prev =0;
+  unsigned long t_now = micros();
+  double dt = (t_now-t_prev) /1000000.0;
+  t_prev =t_now;
+
+ //자이로센서 각도 구하기
+  const float GYROXYZ_TO_DEGREES_PER_SEC =131;
+  double GyXR = GyXD / GYROXYZ_TO_DEGREES_PER_SEC;
+  double GyYR = GyYD / GYROXYZ_TO_DEGREES_PER_SEC; 
+  double GyZR = GyZD / GYROXYZ_TO_DEGREES_PER_SEC; 
+
+ static double gyAngleX = 0.0, gyAngleY =0.0, gyAngleZ=0.0;
+ gyAngleX += GyXR*dt;
+ gyAngleY += GyYR*dt;
+ gyAngleZ += GyZR*dt;
+
+
+ //가속도 센서로 각도구하기
+ const float RADIANS_TO_DEGREES =180/3.14159;
+ double AcYZD = sqrt(pow(AcY,2) +pow(AcZ,2));  
+ double AcXZD = sqrt(pow(AcX,2)+pow(AcZ,2));
+ double acAngleY =atan(-AcXD/AcYZD)*RADIANS_TO_DEGREES; //roll
+ double acAngleX =atan(AcYD/AcXZD)*RADIANS_TO_DEGREES; //pitch
+ double acAngleZ=0;
+
+ //상보필터
+    const double ALPHA =0.96; 
+    static double cmAngleX=0.0, cmAngleY =0.0, cmAngleZ =0.0;
+    cmAngleX =ALPHA*(cmAngleX+GyXR*dt) + (1.0-ALPHA)*acAngleX;
+    cmAngleY=ALPHA*(cmAngleY+GyYR*dt)+(1.0-ALPHA)*acAngleY;
+    cmAngleZ=gyAngleZ;
+   
+// PID 제어
+//angle_error =target_angle -current_angle;
+//PTerm =Kp*angle_error;
+//Balnacing_Force =PTerm
+  static double tAngleX=0.0, tAngleY=0.0, tAngleZ=0.0;
+  double eAngle_X = tAngleX-cmAngleX; 
+  double eAngle_Y = tAngleY-cmAngleY;
+  double eAngle_Z = tAngleZ-cmAngleZ;
+  double Kp =1.0;
+  double BalX =Kp*eAngle_X;
+  double BalY =Kp*eAngle_Y;
+  double BalZ =Kp*eAngle_Z;
+
+  //미분항 D 구현
+  double Kd=1.0;
+  BalX +=Kd*-GyXR;
+  BalY +=Kd*-GyYR;
+  BalZ +=Kd*-GyZR;
+
+    if(throttle ==0) {
+    BalX=BalY=BalZ=0;
+  }
+
+//I추가
+ double Ki =1.0;
+ double ITermX =0.0, ITermY=0.0, ITermZ=0.0;
+ ITermX+= Ki*eAngle_X*dt;
+ ITermY+= Ki*eAngle_Y*dt;
+ ITermZ+= Ki*eAngle_Z*dt;
+ 
+ if(throttle==0) {
+  ITermX=ITermY=ITermZ=0;
+ }
+
+   BalX+=ITermX;
+   BalY+=ITermY;
+   BalZ+=ITermZ;
+  
+
+
+
+
+// 사용자 입력
+  if(Serial1.available()>0) {
+  while(Serial1.available()>0) {
+      char userInput = Serial1.read();
+     Serial1.print("스로틀 입력 : 숫자");
+     Serial1.print("입력문자 (전진:w, 후진:s 왼쪽:a 오른쪽:d ");
+
+         if(userInput =='w'  ) {
+     Serial1.print("전진 ");
+     tAngleX =-10.0;
+
+      
+   }else if(userInput =='s'  ) {
+     Serial1.print("후진 ");
+     tAngleX =10.0;
+   
+   }
+   else if(userInput =='a' ) {
+     Serial1.print("왼쪽 ");
+
+     tAngleY = -10.0;
+   
+   }
+   else if(userInput =='d'  ) {
+     Serial1.print("오른쪽 ");
+     tAngleY =10.0;
+     
+   }
+   else if(userInput =='s') {
+     tAngleX =0.0;
+     tAngleY= 0.0;
+    
+   }
+   
+           if(userInput >= '0' && userInput <='9') {
+       throttle =(userInput-'0')*10;
+      }
+   }
+     
+   }
+ 
+
+ 
+
+  //모터속도분배
+  double speedA = throttle +BalY+BalX+BalZ;
+  double speedB = throttle -BalY+BalX-BalZ;
+  double speedC = throttle -BalY-BalX+BalZ;
+  double speedD = throttle +BalY-BalX-BalZ;
+
+ //모터속도적용
+  int iSpeedA =constrain ((int)speedA,0,250);
+  int iSpeedB =constrain ((int)speedB,0,250);
+  int iSpeedC =constrain ((int)speedC,0,250);
+  int iSpeedD =constrain ((int)speedD,0,250);
+
+  analogWrite(6,iSpeedA);
+  analogWrite(10,iSpeedB);
+  analogWrite(9,iSpeedC);
+  analogWrite(5,iSpeedD);
+
+   cmAngleZ =gyAngleZ;
+ //  속도 0 만들기
+ if(throttle ==0) {
+  cmAngleX =cmAngleY = cmAngleZ =0;
+ }
+
+  static int cnt_loop;
+  cnt_loop++;
+  if ( cnt_loop % 200 != 0) return;
+
+  Serial.print("dt="); Serial.print(dt,6); 
+  Serial.print("|cmAngleX = "); Serial.print(cmAngleX);
+  Serial.print("|cmAngleY = "); Serial.print(cmAngleY);
+  Serial.print("|cmAngleZ = "); Serial.print(cmAngleZ);
+  Serial.print("| A = "); Serial.print(speedA);
+  Serial.print("| B = "); Serial.print(speedB);
+  Serial.print("| C = "); Serial.print(speedC);
+  Serial.print("| D = "); Serial.print(speedD);
+
+ 
+//  Serial.print("|BalX = "); Serial.print(BalX);
+ // Serial.print("|BalY = "); Serial.print(BalY);
+ // Serial.print("|BalZ = "); Serial.print(BalZ);     
+
+
+//   Serial.print("|gyAngleX = "); Serial.print(gyAngleX);  
+ //  Serial.print("|gyAngleY = "); Serial.print(gyAngleY); 
+ //  Serial.print("|gyAngleZ = "); Serial.print(gyAngleZ); 
+//   Serial.print("|acAngleX = "); Serial.print(acAngleX);  
+ //  Serial.print("|acAngleY = "); Serial.print(acAngleY); 
+ //  Serial.print("|acAngleZ = "); Serial.print(acAngleZ); 
+//  Serial.print(" AcX = ");  Serial.print(AcXD);
+//  Serial.print(" | AcY = ");Serial.print(AcYD);
+ // Serial.print(" | AcZ = ");Serial.print(AcZD);
+
+ // Serial.print(" GyX = ");  Serial.print(GyXD);
+//  Serial.print(" | GyY = ");Serial.print(GyYD);
+ // Serial.print(" | GyZ = ");Serial.print(GyZD);
+  
+  Serial.println();
+
+ 
+}
